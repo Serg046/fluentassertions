@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
-using System.Globalization;
-using System.IO;
-using System.Text.RegularExpressions;
+using System.Linq;
 using FluentAssertions.Common;
+using Mono.Cecil;
+using Mono.Cecil.Cil;
 
 namespace FluentAssertions
 {
@@ -15,6 +17,7 @@ namespace FluentAssertions
 #pragma warning disable CA2211, SA1401, SA1307 // TODO: fix in 6.0
         public static Action<string> logger = _ => { };
 #pragma warning restore SA1307, SA1401, CA2211
+        private static readonly ConcurrentDictionary<string, ModuleDefinition> Modules = new ConcurrentDictionary<string, ModuleDefinition>();
 
         public static string DetermineCallerIdentity()
         {
@@ -48,6 +51,141 @@ namespace FluentAssertions
             return caller;
         }
 
+        private static readonly object Sync = new object();
+
+        private static string ExtractVariableNameFrom(StackFrame frame)
+        {
+            // Synchronize it using a better way
+            lock (Sync)
+            {
+                var method = frame.GetMethod();
+                var assemblyLocation = method.Module.Assembly.Location;
+                var module = Modules.GetOrAdd(assemblyLocation, loc => AssemblyDefinition
+                    .ReadAssembly(assemblyLocation, new ReaderParameters { ReadSymbols = true }).MainModule);
+
+                var methodDef = module.ImportReference(method).Resolve();
+                var debugInfo = module.SymbolReader.Read(methodDef);
+
+                var lineNumber = frame.GetFileLineNumber();
+                var sequencePoint =
+                    debugInfo.SequencePoints.FirstOrDefault(p => lineNumber >= p.StartLine && lineNumber <= p.EndLine);
+                if (sequencePoint != null)
+                {
+                    return ExtractVariableNameFrom(methodDef, sequencePoint, debugInfo);
+                }
+            }
+
+            return null;
+        }
+
+        private static string ExtractVariableNameFrom(MethodDefinition methodDef, SequencePoint sequencePoint, MethodDebugInformation debugInfo)
+        {
+            var instructions = new Stack<Instruction>();
+            foreach (var instruction in methodDef.Body.Instructions.SkipWhile(cmd => cmd.Offset != sequencePoint.Offset))
+            {
+                if (instruction.Operand is MethodReference mRef && mRef.Name == "Should")
+                {
+                    var counter = mRef.Parameters.Count;
+                    while (instructions.Count > 0)
+                    {
+                        var cmd = instructions.Pop();
+                        var caller = TryGetFieldName(cmd)
+                                     ?? TryGetPropertyName(cmd)
+                                     ?? TryGetVariableName(cmd, debugInfo.Scope.Variables)
+                                     ?? TryGetParameterName(cmd, methodDef.Parameters, methodDef.IsStatic);
+                        if (caller != null && --counter == 0)
+                        {
+                            return caller;
+                        }
+                    }
+                }
+
+                instructions.Push(instruction);
+            }
+
+            return null;
+        }
+
+        private static string TryGetFieldName(Instruction instruction)
+        {
+            return (instruction.OpCode.Equals(OpCodes.Ldfld) || instruction.OpCode.Equals(OpCodes.Ldsfld))
+                   && instruction.Operand is FieldReference field
+                ? field.Name : null;
+        }
+
+        private static string TryGetPropertyName(Instruction instruction)
+        {
+            var method = instruction.Operand as MethodDefinition;
+            if (method == null && instruction.Operand is MethodReference m)
+            {
+                method = m.Resolve();
+            }
+
+            return method != null && method.IsGetter && method.Name.StartsWith("get_", StringComparison.Ordinal)
+                ? method.Name.Substring(4)
+                : null;
+        }
+
+        private static string TryGetVariableName(Instruction instruction, IList<VariableDebugInformation> variables)
+        {
+            if (instruction.OpCode.Equals(OpCodes.Ldloc_0))
+            {
+                return variables[0].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldloc_1))
+            {
+                return variables[1].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldloc_2))
+            {
+                return variables[2].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldloc_3))
+            {
+                return variables[3].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldloc) || instruction.OpCode.Equals(OpCodes.Ldloc_S))
+            {
+                if (instruction.Operand is int idx)
+                {
+                    return variables[idx].Name;
+                }
+            }
+
+            return null;
+        }
+
+        private static string TryGetParameterName(Instruction instruction, IList<ParameterDefinition> parameters, bool isStatic)
+        {
+            var offset = isStatic ? 0 : 1;
+            if (instruction.OpCode.Equals(OpCodes.Ldarg_0))
+            {
+                return isStatic ? parameters[0].Name : null;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldarg_1))
+            {
+                return parameters[1 - offset].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldarg_2))
+            {
+                return parameters[2 - offset].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldarg_3))
+            {
+                return parameters[3 - offset].Name;
+            }
+            else if (instruction.OpCode.Equals(OpCodes.Ldarg) || instruction.OpCode.Equals(OpCodes.Ldarg_S))
+            {
+                if (instruction.Operand is int idx)
+                {
+                    var i = idx - offset;
+                    return i >= 0 ? parameters[i].Name : null;
+                }
+            }
+
+            return null;
+        }
+
         private static bool IsCustomAssertion(StackFrame frame)
         {
             return frame.GetMethod().IsDecoratedWithOrInherit<CustomAssertionAttribute>();
@@ -70,88 +208,6 @@ namespace FluentAssertions
 
             return frameNamespace?.StartsWith("system.", comparisonType) == true ||
                 frameNamespace?.Equals("system", comparisonType) == true;
-        }
-
-        private static string ExtractVariableNameFrom(StackFrame frame)
-        {
-            string caller = null;
-
-            int column = frame.GetFileColumnNumber();
-            string line = GetSourceCodeLineFrom(frame);
-
-            if ((line != null) && (column != 0) && (line.Length > 0))
-            {
-                string statement = line.Substring(Math.Min(column - 1, line.Length - 1));
-
-                logger(statement);
-
-                int indexOfShould = statement.IndexOf(".Should", StringComparison.Ordinal);
-                if (indexOfShould != -1)
-                {
-                    string candidate = statement.Substring(0, indexOfShould);
-
-                    logger(candidate);
-
-                    if (!IsBooleanLiteral(candidate) && !IsNumeric(candidate) && !IsStringLiteral(candidate) &&
-                        !UsesNewKeyword(candidate))
-                    {
-                        caller = candidate;
-                    }
-                }
-            }
-
-            return caller;
-        }
-
-        private static string GetSourceCodeLineFrom(StackFrame frame)
-        {
-            string fileName = frame.GetFileName();
-            int expectedLineNumber = frame.GetFileLineNumber();
-
-            if (string.IsNullOrEmpty(fileName) || (expectedLineNumber == 0))
-            {
-                return null;
-            }
-
-            try
-            {
-                using StreamReader reader = new StreamReader(File.OpenRead(fileName));
-                string line;
-                int currentLine = 1;
-
-                while ((line = reader.ReadLine()) != null && currentLine < expectedLineNumber)
-                {
-                    currentLine++;
-                }
-
-                return (currentLine == expectedLineNumber) ? line : null;
-            }
-            catch
-            {
-                // We don't care. Just assume the symbol file is not available or unreadable
-                return null;
-            }
-        }
-
-        private static bool UsesNewKeyword(string candidate)
-        {
-            return Regex.IsMatch(candidate, @"new(\s?\[|\s?\{|\s\w+)");
-        }
-
-        private static bool IsStringLiteral(string candidate)
-        {
-            return candidate.StartsWith("\"", StringComparison.Ordinal);
-        }
-
-        private static bool IsNumeric(string candidate)
-        {
-            const NumberStyles DefaultStyle = NumberStyles.Float | NumberStyles.AllowThousands;
-            return double.TryParse(candidate, DefaultStyle, CultureInfo.InvariantCulture, out _);
-        }
-
-        private static bool IsBooleanLiteral(string candidate)
-        {
-            return candidate == "true" || candidate == "false";
         }
     }
 }

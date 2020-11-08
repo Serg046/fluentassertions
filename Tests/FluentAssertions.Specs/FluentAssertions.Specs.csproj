@@ -52,6 +52,7 @@
 
   <ItemGroup>
     <PackageReference Include="Chill" Version="4.0.0" />
+    <PackageReference Include="Mono.Cecil" Version="0.10.4" />
     <PackageReference Include="Newtonsoft.Json" Version="11.0.2" />
     <PackageReference Include="xunit" Version="2.4.1" />
     <PackageReference Include="Xunit.StaFact" Version="1.0.37" />

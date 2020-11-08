@@ -50,6 +50,22 @@ namespace FluentAssertions.Specs
             act.Should().Throw<XunitException>()
                 .WithMessage("*Expected fooShould to be <null>*");
         }
+
+        [Fact]
+        public void When_variable_and_Should_are_on_different_lines_it_should_remove_empty_symbols()
+        {
+            // Arrange
+            string foo = "bar";
+
+            // Act
+            Action act = () => foo
+
+                     .Should().BeNull();
+
+            // Assert
+            act.Should().Throw<XunitException>()
+                .WithMessage("*Expected foo to be <null>*");
+        }
     }
 }
 

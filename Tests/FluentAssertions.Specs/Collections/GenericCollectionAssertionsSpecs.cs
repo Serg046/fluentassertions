@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Text;
 using Xunit;
 using Xunit.Sdk;
 
@@ -119,7 +120,7 @@ namespace FluentAssertions.Specs
         public void When_asserting_collection_contains_some_values_but_collection_is_null_it_should_throw()
         {
             // Arrange
-            const IEnumerable<string> strings = null;
+            IEnumerable<string> strings = null;
 
             // Act
             Action act = () => strings.Should().Contain("string4", "because we're checking how it reacts to a null subject");
@@ -148,7 +149,7 @@ namespace FluentAssertions.Specs
         public void When_asserting_collection_contains_values_according_to_predicate_but_collection_is_null_it_should_throw()
         {
             // Arrange
-            const IEnumerable<string> strings = null;
+            IEnumerable<string> strings = null;
 
             // Act
             Action act = () => strings.Should().Contain(x => x == "xxx", "because we're checking how it reacts to a null subject");
@@ -162,7 +163,7 @@ namespace FluentAssertions.Specs
         public void When_asserting_collection_doesnt_contain_values_according_to_predicate_but_collection_is_null_it_should_throw()
         {
             // Arrange
-            const IEnumerable<string> strings = null;
+            IEnumerable<string> strings = null;
 
             // Act
             Action act =
@@ -1871,15 +1872,15 @@ namespace FluentAssertions.Specs
             act.Should().Throw<XunitException>().WithMessage(
 @"Expected customers to satisfy all inspectors because we want to test nested assertions, but some inspectors are not satisfied:
 *At index 0:
-*Expected customer.Age to be less than 21, but found 21
-*Expected customer.Items to satisfy all inspectors, but some inspectors are not satisfied:
+*Expected Age to be less than 21, but found 21
+*Expected Items to satisfy all inspectors, but some inspectors are not satisfied:
 *At index 0:
 *Expected item to be 2, but found 1
 *At index 1:
 *Expected item to be 1, but found 2
 *At index 1:
-*Expected customer.Age to be less than 22, but found 22
-*Expected customer.Items to satisfy all inspectors, but some inspectors are not satisfied:
+*Expected Age to be less than 22, but found 22
+*Expected Items to satisfy all inspectors, but some inspectors are not satisfied:
 *At index 0:
 *Expected item to be 2, but found 3"
 );
